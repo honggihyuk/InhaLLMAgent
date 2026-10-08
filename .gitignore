@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# runtime artifacts
+data/index/
+data/raw/
+data/runs/
+data/audit/
+*.faiss

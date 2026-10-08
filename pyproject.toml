@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphaagent"
+version = "0.1.0"
+description = "RAG-based multi-agent LLM framework for mining alpha from unstructured financial text"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "faiss-cpu>=1.7.4",
+    "httpx>=0.24",
+    "feedparser>=6.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=2.7", "torch>=2.0"]
+llm = ["anthropic>=0.30"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+alphaagent = "alphaagent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["alphaagent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
