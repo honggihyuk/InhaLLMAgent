@@ -2,18 +2,40 @@
 
 비정형 금융 텍스트(실적 발표 녹취록, SEC 공시, 뉴스)에서 알파 팩터를 찾는 RAG + 멀티 에이전트 시스템입니다.
 "How Quants Use LLM Agents To Mine Alpha From Unstructured Data (The Complete RAG Framework)" 글의
-아키텍처와 12주 로드맵을 순서대로 구현합니다.
+아키텍처와 12주 로드맵을 구현했습니다.
 
-## 로드맵 진행 상황
+자세한 내용은 [docs/](docs/README.md)에 있습니다: [아키텍처](docs/architecture.md) · [작업 문서](docs/work-log.md) · [운영 가이드](docs/operations.md)
 
-| 주차 | 내용 | 상태 |
+## 아키텍처
+
+```mermaid
+flowchart LR
+    SRC[SEC 공시 · 뉴스 · 녹취록] -->|폴러 → Kafka| ING[수집 컨슈머]
+    ING -->|BGE-M3| VDB[(FAISS<br/>종목·날짜 필터)]
+    ING -->|LLM 채점| TXT[텍스트 신호]
+    VDB --> RAG[RAG + CoT 에이전트]
+    subgraph RES[연구: AlphaGenerationPipeline]
+        RAG --> IDEA[아이디어] --> CODE[구현] --> SBX[샌드박스] --> BIAS[편향 검사] --> EVAL[평가·직교화] --> REV[검토]
+    end
+    TXT --> SBX
+    REV --> LIB[(FactorLibrary)]
+    LIB --> PM[Portfolio] --> RISK[Risk] --> CTRL[차단기 · 킬 스위치 · 사람 승인] --> EXEC[모의 운용]
+    EXEC --> AUD[(해시 체인 감사 추적)]
+```
+
+| 층 | 역할 | 주요 모듈 |
 |---|---|---|
-| 1-2 | 벡터 DB(FAISS), 문서 수집, BGE-M3/FinBERT 임베딩, 종목 필터 검색 API | ✅ |
-| 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ✅ |
-| 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ✅ |
-| 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ✅ |
-| 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ✅ |
-| 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ✅ |
+| 데이터 | 문서 수집(SEC·RSS·녹취록), 청크, 임베딩, 벡터 검색, Kafka 실시간 수집 | `ingestion/` `embeddings/` `vectorstore/` `retrieval/` `streaming/` |
+| 추론 | 교체 가능한 LLM 백엔드(Claude·vLLM·Mock), RAG 기반 CoT 에이전트, 메시지 프로토콜, 공유 메모리 | `llm/` `agents/` |
+| 연구 | 팩터 생성·격리 실행·미래 정보 누수 검사·IS/OOS·워크포워드·스패닝·직교화·검토 | `pipeline.py` `sandbox/` `validation/` `backtest/` `features/` |
+| 운용 | Manager·분석가·Portfolio·Risk 에이전트, 앙상블 투표, 리스크 오버레이, 감쇠 대시보드 | `team.py` `agents/` `risk/` `monitoring/` |
+| 통제 | 회로 차단기, 킬 스위치, 승인 대기열, 감사 추적·규제 보고서, 운영자 API, K8s 배포 | `ops/` `deploy/` |
+
+핵심 원칙
+- **시점 고정**: 검색, 텍스트 신호, 팩터 값, 백테스트 체결, 앙상블 가중치 갱신 모두 그 시점까지 알 수 있던 정보만 씁니다.
+- **생성 코드는 격리 실행**: AST 정책 → 별도 `python -I` 프로세스 → 결과는 float 배열로만 회수합니다.
+- **LLM은 위험을 줄이기만 합니다**: 채택과 포지션 확대는 수치 기준만 할 수 있고, LLM·운영자 오버라이드는 축소·거절 방향으로만 작동합니다.
+- **모든 결정은 감사 기록**: LLM 호출, 채택, 리스크 조치, 승인, 주문이 위변조 탐지 가능한 체인으로 남습니다.
 
 ## 설치
 
