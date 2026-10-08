@@ -10,7 +10,7 @@
 |---|---|---|
 | 1-2 | 벡터 DB(FAISS), 문서 수집, BGE-M3/FinBERT 임베딩, 종목 필터 검색 API | ✅ |
 | 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ✅ |
-| 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ⏳ |
+| 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ✅ |
 | 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ⏳ |
 | 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ⏳ |
 | 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ⏳ |
@@ -100,6 +100,44 @@ alphaagent/
 
 LLM 설정 환경 변수: `ALPHA_LLM_PROVIDER` (`anthropic`|`vllm`|`mock`), `ALPHA_LLM_MODEL`.
 Claude는 `ANTHROPIC_API_KEY` 또는 `ant auth login` 프로필을 사용합니다.
+
+## 5-6주차: 알파 생성 파이프라인
+
+```
+alphaagent/
+  pipeline.py           AlphaGenerationPipeline (+ PipelineConfig)
+  features/text_signals.py  문서 → LLM 점수(sentiment / guidance / risk) → 시점 기준 일별 패널
+  sandbox/              생성 코드 실행 샌드박스 (AST 정책 + 격리 프로세스 + 타임아웃 + 출력 검증)
+  validation/
+    lookahead.py        예측(미래 정보) 편향 탐지: 정적 패턴 + 데이터 절단 테스트
+    factors.py          알려진 팩터 라이브러리, 횡단면 직교화, 중복도
+  backtest/engine.py    벡터화 백테스터 (체결 지연, 거래비용, 리밸런싱 주기, 리스크 오버레이 훅)
+  backtest/backtrader_adapter.py  Backtrader 교차 검증
+  library.py            FactorLibrary: 모든 팩터·지표·판정 기록(JSON), 아이디어 에이전트 피드백
+  data/synthetic.py     합성 가격 + 합성 문서(문서 톤이 이후 수익을 예측하도록 심어둠)
+scripts/demo_pipeline.py  전체 흐름 데모
+```
+
+파이프라인 단계 (원문의 SAF: Search → Analyze → Finalize):
+
+1. **아이디어**: 검색된 문서 근거와 지난 라운드 결과(FactorLibrary)를 보고 팩터 제안
+2. **구현**: `compute_alpha(df)` 코드 작성. 실패하면 오류 내용을 주고 수정 요청(기본 2회)
+3. **안전성**: AST 정책(임포트·파일·네트워크·dunder 금지) → 별도 `python -I` 프로세스에서 실행(축소된 builtins, 타임아웃, POSIX 메모리 제한). 결과는 pickle이 아닌 float 배열로만 받습니다.
+4. **예측 편향**: `shift(-k)`, `bfill`, `rolling(center=True)` 등 정적 탐지 + **절단 테스트**(기준일 이후 데이터를 지워도 그 이전 값이 같아야 함). 전체 표본 평균으로 정규화하는 것처럼 정적으로 안 보이는 누수도 잡습니다.
+5. **평가**: 기간을 IS/OOS로 나누고 부호는 IS에서만 정합니다. OOS IC, t-stat, 거래비용 차감 백테스트.
+6. **새로움**: 모멘텀·단기반전·저변동성·규모·유동성 대비 직교화 후 잔차 IC, 이미 채택된 팩터와의 상관.
+7. **판정**: 통계 게이트와 평가 에이전트 검토를 모두 통과해야 채택됩니다.
+
+```bash
+python scripts/demo_pipeline.py                  # 오프라인(MockLLM)
+python scripts/demo_pipeline.py --llm anthropic  # 실제 Claude 호출 (비용 발생)
+```
+
+오프라인 데모 결과(합성 데이터 50종목 × 300일): 텍스트 기반 `sentiment_drift`만 채택(OOS IC 0.139, 비용 차감 샤프 5.6).
+단기반전 계열은 알려진 팩터와 상관 0.9 이상이라 기각, `vwap_gap`은 회전율 1.6으로 비용 차감 후 손실이라 기각됩니다.
+합성 데이터의 신호는 일부러 강하게 심은 것이라, 이 수치는 파이프라인이 제대로 동작하는지 확인하는 용도입니다.
+
+참고: 문서 점수 매기기는 문서마다 LLM 호출 1회입니다. 결과는 `doc_scores.jsonl`에 캐시됩니다.
 
 ## 테스트
 

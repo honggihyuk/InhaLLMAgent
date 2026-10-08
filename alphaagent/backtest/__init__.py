@@ -17,3 +17,6 @@ __all__ = [
     "rank_weights",
     "summarize_factor",
 ]
+from alphaagent.backtest.engine import BacktestConfig, BacktestResult, run_backtest
+
+__all__ += ["BacktestConfig", "BacktestResult", "run_backtest"]

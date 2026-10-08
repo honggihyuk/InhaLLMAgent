@@ -51,11 +51,11 @@ TEMPLATES: List[Dict] = [
     {
         "name": "sentiment_drift",
         "requires": ["sentiment"],
-        "description": "Prices under-react to tone in earnings calls and news; recent positive tone predicts drift.",
-        "expression": "ts_mean(sentiment, 10)",
+        "description": "Prices under-react to tone in earnings calls and news; fresh positive tone predicts drift.",
+        "expression": "rank(sentiment)",
         "data_fields": ["sentiment"],
         "code": '''def compute_alpha(df):
-    return df.groupby(level="ticker")["sentiment"].transform(lambda s: s.rolling(10, min_periods=1).mean())''',
+    return df.groupby(level="date")["sentiment"].rank(pct=True)''',
     },
     {
         "name": "guidance_surprise_unpriced",
@@ -138,6 +138,30 @@ def evaluation_handler(prompt: str, system: Optional[str]) -> str:
     return _wrap("```json\n" + json.dumps(verdict) + "\n```", 0.7 if passed else 0.6)
 
 
+_POS = ("record", "raising", "raised", "beat", "strong", "growth", "expanded", "exceeded", "robust", "accelerat",
+        "upgrade", "all-time high", "momentum", "outperform")
+_NEG = ("decline", "lowering", "lowered", "cut", "weak", "pressure", "compressed", "delay", "miss", "challenging",
+        "impairment", "softness", "headwind", "slowdown")
+_RISK = ("litigation", "investigation", "liquidity", "revolver", "impairment", "uncertain", "restatement", "default",
+         "covenant", "recall")
+
+
+def text_scoring_handler(prompt: str, system: Optional[str]) -> str:
+    """Lexicon scorer: a transparent stand-in for LLM document scoring."""
+    body = prompt.split("---", 1)[-1].lower()
+    pos = sum(body.count(w) for w in _POS)
+    neg = sum(body.count(w) for w in _NEG)
+    sentiment = (pos - neg) / max(pos + neg, 1)
+    guidance = 0.0
+    if re.search(r"(rais\w*|increas\w*|lift\w*)[^.]{0,30}guidance|guidance[^.]{0,30}(rais|increas|above)", body):
+        guidance = 1.0
+    elif re.search(r"(lower\w*|cut\w*|reduc\w*)[^.]{0,30}guidance|guidance[^.]{0,30}(lower|cut|below)", body):
+        guidance = -1.0
+    risk = min(1.0, sum(body.count(w) for w in _RISK) / 3.0)
+    out = {"sentiment": round(sentiment, 3), "guidance": guidance, "risk": round(risk, 3), "rationale": "lexicon score"}
+    return "```json\n" + json.dumps(out) + "\n```"
+
+
 def generic_handler(prompt: str, system: Optional[str]) -> str:
     return _wrap("Acknowledged. No further action required.", 0.5)
 
@@ -148,5 +172,6 @@ def default_handlers(seed: int = 0) -> Dict[str, Callable[[str, Optional[str]], 
         "implementation": implementation_handler,
         "repair": implementation_handler,
         "evaluation": evaluation_handler,
+        "text_scoring": text_scoring_handler,
         "generic": generic_handler,
     }
