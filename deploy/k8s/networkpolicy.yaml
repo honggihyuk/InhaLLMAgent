@@ -1,0 +1,49 @@
+# Default deny, then allow only what each tier needs. The research job (which runs LLM-generated code in its
+# sandbox) can reach Kafka and HTTPS for the LLM API, nothing else inside the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: alphaagent}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns, namespace: alphaagent}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api-ingress, namespace: alphaagent}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}}]
+      ports: [{port: 8000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: workers-egress, namespace: alphaagent}
+spec:
+  podSelector: {matchExpressions: [{key: tier, operator: In, values: [worker, batch, serving]}]}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {strimzi.io/cluster: alphaagent}}}]
+      ports: [{port: 9092}]
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}}]
+      ports: [{port: 443}]  # LLM API, SEC EDGAR, RSS feeds, model hub
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: kafka-ingress, namespace: alphaagent}
+spec:
+  podSelector: {matchLabels: {strimzi.io/cluster: alphaagent}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {}}]

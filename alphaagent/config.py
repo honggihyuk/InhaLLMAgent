@@ -26,6 +26,8 @@ class Settings:
     # LLM backend: "anthropic" or "mock"
     llm_provider: str = field(default_factory=lambda: _env("ALPHA_LLM_PROVIDER", "anthropic"))
     llm_model: str = field(default_factory=lambda: _env("ALPHA_LLM_MODEL", "claude-opus-5-5"))
+    # "kafka://host:9092" in production; "memory://" runs everything in one process
+    broker_url: str = field(default_factory=lambda: _env("ALPHA_BROKER_URL", "memory://"))
 
     @property
     def index_dir(self) -> Path:

@@ -13,7 +13,7 @@
 | 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ✅ |
 | 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ✅ |
 | 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ✅ |
-| 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ⏳ |
+| 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ✅ |
 
 ## 설치
 
@@ -202,6 +202,41 @@ RESULT로 회신 → Manager가 배포할 팩터와 비중을 종합 → Portfol
 python scripts/demo_team.py                  # 오프라인
 python scripts/demo_team.py --llm anthropic  # 실제 Claude (비용 발생)
 ```
+
+## 11-12주차: 프로덕션 배포
+
+```
+alphaagent/
+  streaming/            Kafka 실시간 수집: 폴러 → docs.raw → 수집 컨슈머(색인 + LLM 점수) → docs.indexed / signals.text
+                        InMemoryBroker(테스트·단일 프로세스) / KafkaBroker(confluent-kafka), 분산 MessageBus
+  ops/audit.py          해시 체인 감사 추적(위변조 탐지), LLM 호출 기록(프롬프트는 해시만), 규제 보고서(JSON / Markdown)
+  ops/controls.py       회로 차단기(LLM API), 대체 모델 전환, 거래 차단기(손실·낙폭·데이터 지연·회전율),
+                        킬 스위치, 팩터 일시정지, 운용 배율, 대규모 거래 사람 승인 대기열
+  ops/live.py           모의 운용 루프: 위 통제를 모두 거쳐 포지션 결정, 모든 주문을 감사 기록
+  ops/api.py            운영자 API (/ops/...), X-Operator 헤더 필수, 모든 조작 감사 기록
+deploy/
+  Dockerfile, docker-compose.yml   로컬: Kafka(KRaft) + API + 수집 컨슈머 + 폴러
+  k8s/                  Namespace(restricted), ConfigMap, PVC, Strimzi Kafka + 토픽, API(HPA), 컨슈머(단일 작성자),
+                        폴러, 야간 연구 CronJob, NetworkPolicy(기본 차단), Secret 예시
+scripts/demo_live.py
+```
+
+CLI:
+
+```bash
+alphaagent serve --with-ops          # 검색 API + 운영자 API, 인덱스 파일 변경 자동 반영
+alphaagent consume --score           # docs.raw 소비 → 색인 → LLM 점수 → signals.text (ALPHA_BROKER_URL)
+alphaagent poll --tickers AAPL MSFT  # SEC(SEC_USER_AGENT 설정 시) + 야후 RSS → docs.raw
+kubectl apply -k deploy/k8s          # Strimzi 오퍼레이터 설치 후, Secret은 별도 생성
+```
+
+운영 통제 동작:
+- **킬 스위치**: 다음 스텝에서 전 포지션 청산. 해제는 운영자 이름과 사유가 있어야 합니다.
+- **거래 차단기**: 일간 손실, 낙폭, 입력 데이터 지연, 리스크 에이전트 중단 요청 중 하나라도 걸리면 거래를 멈추고, 사람이 리셋할 때까지 유지됩니다. 회전율이 한도를 넘으면 목표까지 일부만 이동합니다.
+- **사람 승인**: 종목당 비중 변화가 임계값을 넘는 주문은 승인 대기열로 가고, 승인 전까지 기존 비중을 유지합니다.
+- **운영자 배율**: 0~1만 허용합니다. 규모를 키우는 변경은 설정 검토를 거쳐야 합니다.
+- **감사 추적**: 레코드마다 이전 해시를 포함한 SHA-256 체인이라, 과거 줄을 고치거나 지우면 `verify`가 위치를 찾아냅니다.
+- **보안**: 생성 코드를 실행하는 연구 작업은 비루트, 읽기 전용 루트 FS, 권한 제거, NetworkPolicy로 Kafka와 외부 HTTPS만 허용됩니다.
 
 ## 테스트
 

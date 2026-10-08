@@ -23,6 +23,8 @@ dependencies = [
 embeddings = ["sentence-transformers>=2.7", "torch>=2.0"]
 llm = ["anthropic>=0.30"]
 backtest = ["backtrader>=1.9"]
+streaming = ["confluent-kafka>=2.3"]
+market = ["yfinance>=0.2"]
 dev = ["pytest>=7"]
 
 [project.scripts]

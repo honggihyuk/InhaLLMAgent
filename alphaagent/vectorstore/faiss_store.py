@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -110,11 +111,15 @@ class FaissVectorStore(VectorStore):
     def save(self, directory) -> None:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        # faiss' C++ writer can choke on non-ASCII paths on Windows; serialize in Python instead
-        (directory / self.INDEX_FILE).write_bytes(faiss.serialize_index(self.index).tobytes())
-        with open(directory / self.META_FILE, "w", encoding="utf-8") as fh:
+        # faiss' C++ writer can choke on non-ASCII paths on Windows; serialize in Python instead.
+        # Write to temp files and rename so concurrent readers never see a half-written index.
+        tmp_index, tmp_meta = directory / (self.INDEX_FILE + ".tmp"), directory / (self.META_FILE + ".tmp")
+        tmp_index.write_bytes(faiss.serialize_index(self.index).tobytes())
+        with open(tmp_meta, "w", encoding="utf-8") as fh:
             for fid, chunk in self._chunks.items():
                 fh.write(json.dumps({"fid": fid, **chunk.to_dict()}, ensure_ascii=False) + "\n")
+        os.replace(tmp_index, directory / self.INDEX_FILE)
+        os.replace(tmp_meta, directory / self.META_FILE)
 
     @classmethod
     def load(cls, directory) -> "FaissVectorStore":

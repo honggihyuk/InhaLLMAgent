@@ -1,0 +1,45 @@
+# Namespace, configuration, storage. Secrets are created out-of-band (see secret.example.yaml).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alphaagent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alphaagent-config
+  namespace: alphaagent
+data:
+  ALPHA_DATA_DIR: /data
+  ALPHA_EMBEDDER: bge-m3
+  ALPHA_EMBED_DEVICE: cpu
+  ALPHA_LLM_PROVIDER: anthropic
+  ALPHA_LLM_MODEL: claude-opus-5-5
+  ALPHA_BROKER_URL: kafka://alphaagent-kafka-bootstrap.alphaagent.svc:9092
+  HF_HOME: /models
+---
+# Shared index / factor library / audit trail. ReadWriteMany so the API (reader) and the
+# ingestion consumer + research job (writers) can mount it; use EFS/Filestore/Azure Files or similar.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alphaagent-data
+  namespace: alphaagent
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alphaagent-models
+  namespace: alphaagent
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 10Gi

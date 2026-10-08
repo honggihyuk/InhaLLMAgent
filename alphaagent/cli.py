@@ -72,9 +72,56 @@ def cmd_search(args, settings) -> int:
 
 
 def cmd_serve(args, settings) -> int:
+    import os
+
     import uvicorn
 
+    if args.with_ops:
+        os.environ["ALPHA_WITH_OPS"] = "1"
     uvicorn.run("alphaagent.retrieval.api:app", host=args.host, port=args.port)
+    return 0
+
+
+def _ops_llm(settings):
+    """Production LLM stack: provider client -> circuit breaker -> audit trail."""
+    from alphaagent.llm import LLMConfig, build_llm
+    from alphaagent.ops import AuditedLLM, AuditTrail, CircuitBreaker, ResilientLLM
+
+    audit = AuditTrail(str(settings.data_dir / "audit" / "audit.jsonl"))
+    llm = build_llm(LLMConfig(provider=settings.llm_provider, model_name=settings.llm_model))
+    return AuditedLLM(ResilientLLM(llm, CircuitBreaker("llm", audit=audit)), audit)
+
+
+def cmd_consume(args, settings) -> int:
+    from alphaagent.features import TextSignalExtractor
+    from alphaagent.ingestion import IngestionPipeline, TextChunker
+    from alphaagent.streaming import IngestionConsumer, build_broker
+
+    embedder, store = _store_and_embedder(settings)
+    pipeline = IngestionPipeline(embedder, store, TextChunker(settings.chunk_size, settings.chunk_overlap))
+    scorer = None
+    if args.score:
+        scorer = TextSignalExtractor(_ops_llm(settings), cache_path=str(settings.data_dir / "signals" / "doc_scores.jsonl"))
+    consumer = IngestionConsumer(build_broker(settings.broker_url), pipeline, scorer,
+                                 on_batch=lambda: store.save(settings.index_dir))
+    if args.once:
+        consumer.run_once()
+    else:
+        consumer.run_forever()
+    print(json.dumps(consumer.stats.__dict__))
+    return 0
+
+
+def cmd_poll(args, settings) -> int:
+    from alphaagent.ingestion import RSSNewsSource, SECFilingSource
+    from alphaagent.streaming import DocumentProducer, build_broker, poll_sources
+
+    sources = [RSSNewsSource.yahoo(args.tickers)]
+    if settings.sec_user_agent:
+        sources.append(SECFilingSource(args.tickers, settings.sec_user_agent, limit_per_ticker=args.limit))
+    producer = DocumentProducer(build_broker(settings.broker_url))
+    n = poll_sources(sources, producer, interval=args.interval, iterations=1 if args.once else None)
+    print(json.dumps({"published": n}))
     return 0
 
 
@@ -105,7 +152,20 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve", help="run the retrieval API")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--with-ops", action="store_true", help="mount the operator control API under /ops")
     sv.set_defaults(func=cmd_serve)
+
+    co = sub.add_parser("consume", help="Kafka ingestion consumer (docs.raw -> index [+ LLM scores])")
+    co.add_argument("--score", action="store_true", help="also score documents with the LLM (signals.text)")
+    co.add_argument("--once", action="store_true")
+    co.set_defaults(func=cmd_consume)
+
+    po = sub.add_parser("poll", help="poll SEC/RSS sources and publish new documents to docs.raw")
+    po.add_argument("--tickers", nargs="+", required=True)
+    po.add_argument("--interval", type=float, default=900)
+    po.add_argument("--limit", type=int, default=3)
+    po.add_argument("--once", action="store_true")
+    po.set_defaults(func=cmd_poll)
     return p
 
 

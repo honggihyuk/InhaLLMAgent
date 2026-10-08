@@ -115,7 +115,40 @@ def create_app(retriever: Retriever, pipeline: Optional[IngestionPipeline] = Non
     return app
 
 
+class ReloadingRetriever(Retriever):
+    """Picks up index files rewritten by the ingestion consumer (checked at most every ``interval`` s)."""
+
+    def __init__(self, embedder, store, index_dir, interval: float = 30.0) -> None:
+        super().__init__(embedder, store)
+        self.index_dir = index_dir
+        self.interval = interval
+        self._checked = 0.0
+        self._mtime = self._current_mtime()
+
+    def _current_mtime(self) -> float:
+        from alphaagent.vectorstore import FaissVectorStore
+
+        f = self.index_dir / FaissVectorStore.META_FILE
+        return f.stat().st_mtime if f.exists() else 0.0
+
+    def search(self, *args, **kwargs):
+        import time
+
+        from alphaagent.vectorstore import FaissVectorStore
+
+        now = time.monotonic()
+        if now - self._checked > self.interval:
+            self._checked = now
+            m = self._current_mtime()
+            if m and m != self._mtime:
+                self.store = FaissVectorStore.load(self.index_dir)
+                self._mtime = m
+        return super().search(*args, **kwargs)
+
+
 def _default_app() -> FastAPI:
+    import os
+
     from alphaagent.config import get_settings
     from alphaagent.embeddings import build_embedder
     from alphaagent.vectorstore import FaissVectorStore
@@ -124,7 +157,15 @@ def _default_app() -> FastAPI:
     embedder = build_embedder(s.embedder, s.embed_device, s.embed_max_seq_length)
     store = FaissVectorStore.load_or_create(s.index_dir, embedder.dim)
     pipeline = IngestionPipeline(embedder, store)
-    return create_app(Retriever(embedder, store), pipeline, on_change=lambda: store.save(s.index_dir))
+    app = create_app(ReloadingRetriever(embedder, store, s.index_dir), pipeline, on_change=lambda: store.save(s.index_dir))
+    if os.getenv("ALPHA_WITH_OPS"):
+        from alphaagent.ops import AuditTrail, ControlCenter, TradingGuard
+        from alphaagent.ops.api import ops_router
+
+        audit = AuditTrail(str(s.data_dir / "audit" / "audit.jsonl"))
+        control = ControlCenter(str(s.data_dir / "ops" / "control.json"), audit)
+        app.include_router(ops_router(control, audit, TradingGuard(control=control, audit=audit)))
+    return app
 
 
 def __getattr__(name):  # lazy module-level ``app`` for ``uvicorn alphaagent.retrieval.api:app``

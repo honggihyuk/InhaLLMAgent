@@ -1,0 +1,139 @@
+# API (retrieval + operator controls), ingestion consumer, source pollers, nightly research CronJob.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: alphaagent
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api, tier: serving}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: api
+          image: ghcr.io/honggihyuk/inhallmagent:latest
+          args: ["serve", "--host", "0.0.0.0", "--port", "8000", "--with-ops"]
+          ports: [{containerPort: 8000}]
+          envFrom: [{configMapRef: {name: alphaagent-config}}, {secretRef: {name: alphaagent-secrets}}]
+          readinessProbe: {httpGet: {path: /health, port: 8000}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /health, port: 8000}, periodSeconds: 30, failureThreshold: 5}
+          resources:
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {cpu: "4", memory: 8Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+            - {name: models, mountPath: /models, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: alphaagent-data}}
+        - {name: models, persistentVolumeClaim: {claimName: alphaagent-models}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: api, namespace: alphaagent}
+spec:
+  selector: {app: api}
+  ports: [{port: 80, targetPort: 8000}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: api, namespace: alphaagent}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: api}
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}
+---
+# Single writer of the vector index: one replica, consumer group "ingestion" (at-least-once, idempotent).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest-consumer
+  namespace: alphaagent
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: ingest-consumer}}
+  template:
+    metadata: {labels: {app: ingest-consumer, tier: worker}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: consumer
+          image: ghcr.io/honggihyuk/inhallmagent:latest
+          args: ["consume", "--score"]
+          envFrom: [{configMapRef: {name: alphaagent-config}}, {secretRef: {name: alphaagent-secrets}}]
+          resources:
+            requests: {cpu: "2", memory: 6Gi}
+            limits: {cpu: "4", memory: 12Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: models, mountPath: /models}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: alphaagent-data}}
+        - {name: models, persistentVolumeClaim: {claimName: alphaagent-models}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pollers
+  namespace: alphaagent
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: pollers}}
+  template:
+    metadata: {labels: {app: pollers, tier: worker}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: pollers
+          image: ghcr.io/honggihyuk/inhallmagent:latest
+          args: ["poll", "--tickers", "AAPL", "MSFT", "NVDA", "--interval", "900"]
+          envFrom: [{configMapRef: {name: alphaagent-config}}, {secretRef: {name: alphaagent-secrets}}]
+          resources: {requests: {cpu: 100m, memory: 512Mi}, limits: {cpu: 500m, memory: 1Gi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+---
+# Nightly research run after the US close: re-mines factors point-in-time and refreshes the monitor.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: research
+  namespace: alphaagent
+spec:
+  schedule: "30 22 * * 1-5"
+  timeZone: "America/New_York"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 14400
+      template:
+        metadata: {labels: {app: research, tier: batch}}
+        spec:
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: research
+              image: ghcr.io/honggihyuk/inhallmagent:latest
+              command: ["python", "scripts/historical_validation.py"]
+              args: ["--llm", "anthropic", "--prices", "/data/prices.csv", "--out", "/data/runs/nightly"]
+              envFrom: [{configMapRef: {name: alphaagent-config}}, {secretRef: {name: alphaagent-secrets}}]
+              resources: {requests: {cpu: "4", memory: 8Gi}, limits: {cpu: "8", memory: 16Gi}}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+                - {name: tmp, mountPath: /tmp}  # sandbox job directories
+          volumes:
+            - {name: data, persistentVolumeClaim: {claimName: alphaagent-data}}
+            - {name: tmp, emptyDir: {sizeLimit: 5Gi}}
