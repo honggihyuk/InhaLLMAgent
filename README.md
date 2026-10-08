@@ -12,7 +12,7 @@
 | 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ✅ |
 | 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ✅ |
 | 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ✅ |
-| 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ⏳ |
+| 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ✅ |
 | 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ⏳ |
 
 ## 설치
@@ -176,6 +176,32 @@ python scripts/historical_validation.py --prices px.csv  # 실제 가격 CSV (da
 운용 중인 팩터-월 12개의 다음 달 평균 IC는 0.076이고, 12개 중 11개 달이 양수였습니다. 초기 3개월은 표본이 짧아 아무것도 채택하지 않았습니다.
 대시보드는 `guidance_surprise_unpriced`를 최근 60일 IC가 전체 평균의 1/3로 떨어져 `decaying`으로 표시합니다.
 실행 시간은 약 7분입니다(대부분 샌드박스 프로세스 기동 시간).
+
+## 9-10주차: 다중 에이전트 강화
+
+```
+alphaagent/
+  agents/manager.py     ManagerAgent: 연구 목표 → 하위 과제 분해, 전문 분석가에게 배정, 결과 종합 (FinCon 방식)
+  agents/portfolio.py   PortfolioAgent: ICIR 가중 팩터 결합 → 순위 비중 → 리스크 오버레이 → 변동성 타기팅
+  agents/risk_agent.py  RiskAgent: VaR/CVaR, 실현 변동성, 낙폭, 노출, 집중도 상시 감시, 한도 위반 시 ALERT·축소·중단
+  agents/ensemble.py    EnsembleDecision: 가중 투표(매수/보유/매도), 적중률로 가중치 학습 + LLM 분석가 투표
+  team.py               ResearchTeam: 위 에이전트 전체를 하나의 MessageBus·SharedMemory로 연결
+scripts/demo_team.py
+```
+
+흐름: Manager가 목표를 과제로 나눠 TASK 메시지로 분석가들에게 보냄 → 각 분석가가 자기 주제로 AlphaGenerationPipeline 실행 →
+RESULT로 회신 → Manager가 배포할 팩터와 비중을 종합 → Portfolio가 포지션 산출 → Risk가 이력 전체를 주 단위로 점검하고
+마지막 날 위험도에 따라 축소·중단 → 앙상블 투표로 종목별 매수/보유/매도 결정.
+
+설계 원칙:
+- **LLM은 위험을 줄이기만 할 수 있습니다.** 포트폴리오 검토에서 LLM이 고를 수 있는 배율은 0~1이고, 리스크 에이전트의 축소·중단은 수치 규칙으로 정해집니다.
+- **앙상블 가중치는 실현된 수익으로만 갱신합니다.** t일의 투표는 t+h일 수익이 확정된 뒤에야 가중치에 반영되며, 시장 전체 상승이 매수 표를 무조건 맞힌 것으로 치지 않도록 횡단면 초과수익으로 채점합니다. 동점이면 보유를 택합니다.
+- **분석가 LLM 투표는 시점 고정입니다.** 기준일 이후 문서는 보지 못하고, 근거가 없으면 보유를 냅니다.
+
+```bash
+python scripts/demo_team.py                  # 오프라인
+python scripts/demo_team.py --llm anthropic  # 실제 Claude (비용 발생)
+```
 
 ## 테스트
 

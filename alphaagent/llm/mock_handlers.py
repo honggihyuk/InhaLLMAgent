@@ -166,6 +166,60 @@ def generic_handler(prompt: str, system: Optional[str]) -> str:
     return _wrap("Acknowledged. No further action required.", 0.5)
 
 
+_SUBTASKS = [
+    ("earnings call tone and post-announcement drift", "sentiment"),
+    ("guidance revisions the price has not yet reflected", "fundamental"),
+    ("newly disclosed risks in filings and news", "risk"),
+    ("price and volume overreaction", "technical"),
+]
+
+
+def decomposition_handler(prompt: str, system: Optional[str]) -> str:
+    m = re.search(r"at most (\d+) focused sub-tasks", prompt)
+    n = int(m.group(1)) if m else 3
+    tasks = [
+        {"task_id": f"t{i + 1}", "theme": theme, "specialty": spec, "rationale": "covers a distinct information channel",
+         "priority": i + 1}
+        for i, (theme, spec) in enumerate(_SUBTASKS[:n])
+    ]
+    return _wrap("```json\n" + json.dumps({"tasks": tasks}) + "\n```", 0.7)
+
+
+def synthesis_handler(prompt: str, system: Optional[str]) -> str:
+    results = prompt.split("Results from the specialists", 1)[-1].split("Synthesise a strategy", 1)[0]
+    names = re.findall(r'"name":\s*"([a-z0-9_]+)"', results)
+    out = {
+        "deploy": sorted(set(names)),
+        "emphasis": {n: 1.0 for n in set(names)},
+        "risks": ["text signals are event-driven: capacity is limited around earnings season"],
+        "next_steps": ["test cross-sectional interactions between tone and recent returns"],
+    }
+    return _wrap("```json\n" + json.dumps(out) + "\n```", 0.65)
+
+
+def portfolio_review_handler(prompt: str, system: Optional[str]) -> str:
+    m = re.search(r"Gross exposure: ([0-9.]+)", prompt)
+    gross = float(m.group(1)) if m else 1.0
+    scale = 1.0 if gross <= 1.5 else round(1.5 / gross, 3)
+    out = {"approve": True, "scale": scale, "notes": ["within limits"] if scale == 1.0 else ["gross above 1.5x, scaling down"]}
+    return _wrap("```json\n" + json.dumps(out) + "\n```", 0.7)
+
+
+def risk_review_handler(prompt: str, system: Optional[str]) -> str:
+    action = re.search(r'"action":\s*"(\w+)"', prompt)
+    act = action.group(1) if action else "none"
+    text = "No limits are breached; keep the book as is." if act == "none" else f"Limits breached; recommended action: {act}."
+    return _wrap(text, 0.7)
+
+
+def vote_handler(prompt: str, system: Optional[str]) -> str:
+    context = prompt.split("## Retrieved Financial Context", 1)[-1].split("## Instructions", 1)[0].lower()
+    pos = sum(context.count(w) for w in _POS)
+    neg = sum(context.count(w) for w in _NEG)
+    vote = "buy" if pos > neg + 1 else "sell" if neg > pos + 1 else "hold"
+    return _wrap("```json\n" + json.dumps({"vote": vote, "reason": f"{pos} positive vs {neg} negative cues"}) + "\n```", 0.6)
+
+
 def default_handlers(seed: int = 0) -> Dict[str, Callable[[str, Optional[str]], str]]:
     return {
         "ideation": ideation_handler(seed),
@@ -173,5 +227,10 @@ def default_handlers(seed: int = 0) -> Dict[str, Callable[[str, Optional[str]], 
         "repair": implementation_handler,
         "evaluation": evaluation_handler,
         "text_scoring": text_scoring_handler,
+        "decomposition": decomposition_handler,
+        "synthesis": synthesis_handler,
+        "portfolio_review": portfolio_review_handler,
+        "risk_review": risk_review_handler,
+        "vote": vote_handler,
         "generic": generic_handler,
     }
