@@ -9,7 +9,7 @@
 | 주차 | 내용 | 상태 |
 |---|---|---|
 | 1-2 | 벡터 DB(FAISS), 문서 수집, BGE-M3/FinBERT 임베딩, 종목 필터 검색 API | ✅ |
-| 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ⏳ |
+| 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ✅ |
 | 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ⏳ |
 | 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ⏳ |
 | 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ⏳ |
@@ -73,6 +73,33 @@ API:
 | `ALPHA_EMBED_DEVICE` | `cpu` | `cuda` 가능 |
 | `ALPHA_CHUNK_SIZE` / `ALPHA_CHUNK_OVERLAP` | `1200` / `200` | 문자 단위 |
 | `SEC_USER_AGENT` | (없음) | SEC 수집 시 필수 |
+
+## 3-4주차: LLM 백엔드 및 에이전트 프레임워크
+
+```
+alphaagent/
+  llm/
+    base.py             LLMConfig / LLMClient 인터페이스 (에이전트는 이것만 사용)
+    anthropic_client.py Claude (기본 claude-opus-5-5, 스트리밍, effort, 거절 시 서버측 fallback)
+    vllm_client.py      로컬 Llama-3-70B 등 vLLM OpenAI 호환 서버
+    mock.py             MockLLM / ScriptedLLM (API 키 없이 테스트·데모)
+  agents/
+    base.py             QuantAgent: RAG 검색 + CoT 프롬프트 + 신뢰도 추출 + 메모리 기록
+    specialists.py      IdeationAgent / ImplementationAgent / EvaluationAgent
+    memory.py           SharedMemory: 라운드별 기록 M(t) = M(t-1) ∪ {a_i(t)}, JSONL 영속화
+    protocol.py         AgentMessage(TASK/RESULT/CRITIQUE/VOTE/ALERT) + MessageBus
+    parsing.py          JSON·코드·신뢰도 추출
+  backtest/metrics.py   IC, Rank IC, ICIR, t-stat, 롱숏 샤프, MDD, 회전율
+```
+
+원문 예제 대비 바꾼 점:
+- **시점 고정 검색**: 에이전트가 `as_of`를 넘기면 그 날짜 이후 문서는 프롬프트에 들어가지 않습니다.
+- **구조화 출력**: 아이디어와 평가는 JSON으로 받고, 코드는 ```python 블록에서 추출합니다(원문의 정규식은 코드 블록을 못 잡습니다).
+- **평가 게이트**: LLM 평가자는 팩터를 거절할 수는 있지만, IC·t-stat 기준을 통과하지 못한 팩터를 승인할 수는 없습니다.
+- **샤프 계산**: 원문은 알파 점수 평균으로 샤프를 계산했지만, 여기서는 순위 기반 달러중립 롱숏 포트폴리오의 실제 다음날 수익으로 계산합니다.
+
+LLM 설정 환경 변수: `ALPHA_LLM_PROVIDER` (`anthropic`|`vllm`|`mock`), `ALPHA_LLM_MODEL`.
+Claude는 `ANTHROPIC_API_KEY` 또는 `ant auth login` 프로필을 사용합니다.
 
 ## 테스트
 
