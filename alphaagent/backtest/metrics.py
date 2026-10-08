@@ -30,15 +30,22 @@ def forward_returns(close: pd.Series, horizon: int = 1) -> pd.Series:
 
 def cross_sectional_corr(alpha: pd.Series, fwd: pd.Series, method: str = "pearson", min_names: int = 5) -> pd.Series:
     df = pd.concat({"a": _as_series(alpha), "r": fwd}, axis=1).dropna()
-    out = {}
-    for date, g in df.groupby(level="date"):
-        if len(g) < min_names or g["a"].nunique() < 2 or g["r"].nunique() < 2:
-            continue
-        if method == "spearman":
-            out[date] = g["a"].rank().corr(g["r"].rank())
-        else:
-            out[date] = g["a"].corr(g["r"])
-    return pd.Series(out, dtype=float).sort_index()
+    if df.empty:
+        return pd.Series(dtype=float)
+    by = df.groupby(level="date")
+    if method == "spearman":
+        df = by.rank()
+        by = df.groupby(level="date")
+    # vectorised per-date Pearson correlation
+    dev = df - by.transform("mean")
+    cov = (dev["a"] * dev["r"]).groupby(level="date").sum()
+    var_a = (dev["a"] ** 2).groupby(level="date").sum()
+    var_r = (dev["r"] ** 2).groupby(level="date").sum()
+    n = by.size()
+    ok = (n >= min_names) & (var_a > 1e-18) & (var_r > 1e-18)
+    corr = cov[ok] / np.sqrt(var_a[ok] * var_r[ok])
+    corr.index.name = None
+    return corr.astype(float).sort_index()
 
 
 def rank_weights(alpha: pd.Series) -> pd.DataFrame:

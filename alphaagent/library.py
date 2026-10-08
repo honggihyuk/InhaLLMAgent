@@ -84,6 +84,8 @@ class FactorLibrary:
                     "OOS_tstat": m.get("oos_ic_tstat"),
                     "Residual_IC": m.get("residual_oos_ic"),
                     "MaxKnownCorr": m.get("max_known_corr"),
+                    "WF_pos": m.get("wf_positive"),
+                    "Span_t": m.get("span_alpha_tstat"),
                     "Sharpe_net": m.get("bt_sharpe"),
                     "MaxDD": m.get("bt_max_drawdown"),
                     "Turnover": m.get("bt_turnover"),

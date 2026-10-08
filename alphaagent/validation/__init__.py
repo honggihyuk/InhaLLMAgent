@@ -20,3 +20,25 @@ __all__ = [
     "static_scan",
     "truncation_test",
 ]
+from alphaagent.validation.walkforward import (
+    HistoricalRun,
+    SpanningResult,
+    WalkForwardResult,
+    historical_reruns,
+    known_factor_returns,
+    spanning_test,
+    walk_forward,
+)
+
+__all__ += [
+    "HistoricalRun",
+    "SpanningResult",
+    "WalkForwardResult",
+    "historical_reruns",
+    "known_factor_returns",
+    "spanning_test",
+    "walk_forward",
+]
+from alphaagent.validation.lookahead import compare_truncated, truncate, truncation_cutoffs
+
+__all__ += ["compare_truncated", "truncate", "truncation_cutoffs"]

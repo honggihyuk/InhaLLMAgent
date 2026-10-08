@@ -87,6 +87,36 @@ def static_scan(code: str) -> LookaheadReport:
 AlphaFn = Callable[[pd.DataFrame], pd.Series]
 
 
+def truncation_cutoffs(data: pd.DataFrame, n_cutoffs: int = 3) -> List[pd.Timestamp]:
+    dates = data.index.get_level_values("date").unique().sort_values()
+    return [dates[int(q * (len(dates) - 1))] for q in np.linspace(0.45, 0.85, n_cutoffs)]
+
+
+def truncate(data: pd.DataFrame, cut) -> pd.DataFrame:
+    return data[data.index.get_level_values("date") <= pd.Timestamp(cut)]
+
+
+def compare_truncated(
+    full: pd.Series, trunc: pd.Series, cut, tol: float = 1e-8, compare_last: int = 30
+) -> Optional[str]:
+    """Violation message if values up to ``cut`` differ between the full and truncated runs."""
+    cut = pd.Timestamp(cut)
+    dates = full.index.get_level_values("date").unique().sort_values()
+    window = dates[dates <= cut][-compare_last:]
+    a = full[full.index.get_level_values("date").isin(window)]
+    b = trunc.reindex(a.index)
+    both_nan = a.isna() & b.isna()
+    diff = (a - b).abs()
+    bad = ~both_nan & ((a.isna() != b.isna()) | (diff > tol * np.maximum(1.0, a.abs())))
+    if not bad.any():
+        return None
+    first = a.index[bad.values][0]
+    return (
+        f"values up to {cut.date()} change when later data is removed "
+        f"({int(bad.sum())} of {len(a)} checked rows differ, e.g. {first[0].date()} {first[1]})"
+    )
+
+
 def truncation_test(
     compute: AlphaFn,
     data: pd.DataFrame,
@@ -97,32 +127,11 @@ def truncation_test(
     full: Optional[pd.Series] = None,
 ) -> List[str]:
     """Return a list of violations. ``compute`` runs the alpha (e.g. through the sandbox)."""
-    dates = data.index.get_level_values("date").unique().sort_values()
-    if cutoffs is None:
-        qs = np.linspace(0.45, 0.85, n_cutoffs)
-        cutoffs = [dates[int(q * (len(dates) - 1))] for q in qs]
+    cutoffs = cutoffs if cutoffs is not None else truncation_cutoffs(data, n_cutoffs)
     if full is None:
         full = compute(data)
-    errors: List[str] = []
-    for cut in cutoffs:
-        cut = pd.Timestamp(cut)
-        trunc_data = data[data.index.get_level_values("date") <= cut]
-        trunc = compute(trunc_data)
-        window = dates[(dates <= cut)][-compare_last:]
-        mask_full = full.index.get_level_values("date").isin(window)
-        a = full[mask_full]
-        b = trunc.reindex(a.index)
-        both_nan = a.isna() & b.isna()
-        diff = (a - b).abs()
-        scale = np.maximum(1.0, a.abs())
-        bad = ~both_nan & ((a.isna() != b.isna()) | (diff > tol * scale))
-        if bad.any():
-            first = a.index[bad.values][0]
-            errors.append(
-                f"values up to {cut.date()} change when later data is removed "
-                f"({int(bad.sum())} of {len(a)} checked rows differ, e.g. {first[0].date()} {first[1]})"
-            )
-    return errors
+    errors = [compare_truncated(full, compute(truncate(data, c)), c, tol, compare_last) for c in cutoffs]
+    return [e for e in errors if e]
 
 
 def check_lookahead(code: str, compute: Optional[AlphaFn] = None, data: Optional[pd.DataFrame] = None, **kw) -> LookaheadReport:

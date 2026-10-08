@@ -29,7 +29,8 @@ from alphaagent.library import FactorLibrary
 from alphaagent.llm.base import LLMClient
 from alphaagent.sandbox import AlphaSandbox
 from alphaagent.validation.factors import compute_known_factors, factor_correlation, orthogonalize
-from alphaagent.validation.lookahead import check_lookahead
+from alphaagent.validation.lookahead import compare_truncated, static_scan, truncate, truncation_cutoffs
+from alphaagent.validation.walkforward import known_factor_returns, spanning_test, walk_forward
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ class PipelineConfig:
     min_net_sharpe: float = 0.0  # out-of-sample, after transaction costs
     lookahead_cutoffs: int = 2
     review_with_llm: bool = True
+    # walk-forward stability and spanning test vs known factor portfolios (week 7-8)
+    wf_train_days: int = 126
+    wf_test_days: int = 21
+    min_wf_positive: float = 0.5  # share of walk-forward windows with positive OOS IC
+    min_spanning_tstat: float = 1.0  # Newey-West t-stat of the alpha intercept
 
 
 class AlphaGenerationPipeline:
@@ -79,6 +85,14 @@ class AlphaGenerationPipeline:
             llm, retriever=retriever, ic_threshold=self.config.ic_threshold, min_tstat=self.config.min_tstat, **common
         )
         self.pipeline_history: List[Dict] = []
+        self._known_cache: Dict = {}
+
+    def _known(self, panel: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Known style factors and their portfolio returns, computed once per panel."""
+        key = (id(panel), len(panel))
+        if key not in self._known_cache:
+            self._known_cache = {key: (compute_known_factors(panel), known_factor_returns(panel))}
+        return self._known_cache[key]
 
     # ---- data ----------------------------------------------------------
     @staticmethod
@@ -111,25 +125,26 @@ class AlphaGenerationPipeline:
     ) -> Tuple[AlphaFactor, Optional[pd.Series]]:
         factor = self.implementer.implement_alpha(idea, fields)
         factor.name = self.library.unique_name(factor.name)
+        cutoffs = truncation_cutoffs(panel, self.config.lookahead_cutoffs)
         for attempt in range(self.config.max_repairs + 1):
-            res = self.sandbox.run(factor.code, panel)
+            report = static_scan(factor.code)
             problem = ""
-            if not res.ok:
-                problem = f"Sandbox execution failed:\n{res.error}"
-            else:
-                report = check_lookahead(
-                    factor.code,
-                    compute=lambda d: self._execute(factor.code, d),
-                    data=panel,
-                    n_cutoffs=self.config.lookahead_cutoffs,
-                    full=res.values,
-                )
-                if report.static_warnings:
-                    factor.notes.extend(report.static_warnings)
-                if report.ok:
-                    factor.notes.extend(res.warnings)
-                    return factor, res.values
+            if report.static_errors:
                 problem = "Look-ahead bias detected:\n" + report.summary()
+            else:
+                # full panel + truncated panels evaluated in one isolated process
+                results = self.sandbox.run_many(factor.code, [panel] + [truncate(panel, c) for c in cutoffs])
+                res = results[0]
+                if not res.ok:
+                    problem = f"Sandbox execution failed:\n{res.error}"
+                else:
+                    report.dynamic_errors = [
+                        e for e in (compare_truncated(res.values, r.values, c) for r, c in zip(results[1:], cutoffs)) if e
+                    ]
+                    if report.ok:
+                        factor.notes.extend(report.static_warnings + res.warnings)
+                        return factor, res.values
+                    problem = "Look-ahead bias detected:\n" + report.summary()
             factor.errors.append(problem[:1000])
             log.info("factor %s attempt %d failed: %s", factor.name, attempt, problem[:200])
             if attempt < self.config.max_repairs:
@@ -158,7 +173,7 @@ class AlphaGenerationPipeline:
         factor.sharpe = bt.stats.get("sharpe")
         factor.max_drawdown = bt.stats.get("max_drawdown")
 
-        known = compute_known_factors(panel)
+        known, known_rets = self._known(panel)
         orth = orthogonalize(signed, known)
         m_res = summarize_factor(orth.residual[oos_mask], close[oos_mask], horizon=cfg.horizon)
         factor.metrics.update(
@@ -176,6 +191,20 @@ class AlphaGenerationPipeline:
             for name, v in self.library.values.items()
             if name in self.library.factors and self.library.factors[name].status == "accepted"
         }
+        wf = walk_forward(values, close, cfg.wf_train_days, cfg.wf_test_days, cfg.horizon)
+        # known-factor portfolios need long lookbacks (momentum), so build them on the full panel
+        span = spanning_test(bt.returns, known_rets.reindex(bt.returns.index))
+        factor.metrics.update(
+            {
+                "wf_windows": int(len(wf.windows)),
+                "wf_mean_oos_ic": wf.mean_oos_ic,
+                "wf_positive": wf.positive_windows,
+                "wf_tstat": wf.oos_ic_tstat,
+                "span_alpha_annual": span.annualized_alpha,
+                "span_alpha_tstat": span.alpha_tstat,
+                "span_r2": span.r2,
+            }
+        )
         factor.metrics["max_library_corr"] = max((abs(c) for c in lib_corr.values()), default=0.0)
         factor.metrics["closest_library_factor"] = max(lib_corr, key=lambda k: abs(lib_corr[k])) if lib_corr else ""
         return factor
@@ -193,6 +222,10 @@ class AlphaGenerationPipeline:
             reasons.append(f"residual IC after orthogonalisation {m.get('residual_oos_ic', 0):.4f} too small")
         if m.get("bt_sharpe", 0) <= cfg.min_net_sharpe:
             reasons.append(f"net-of-cost OOS Sharpe {m.get('bt_sharpe', 0):.2f} (turnover {m.get('bt_turnover', 0):.2f}) too low")
+        if m.get("wf_windows", 0) >= 3 and m.get("wf_positive", 0) < cfg.min_wf_positive:
+            reasons.append(f"only {m['wf_positive']:.0%} of walk-forward windows have positive OOS IC")
+        if m.get("span_alpha_tstat", 0) < cfg.min_spanning_tstat:
+            reasons.append(f"spanning-test alpha t={m.get('span_alpha_tstat', 0):.2f}: explained by known factor returns")
         if m.get("max_library_corr", 0) > cfg.max_library_corr:
             reasons.append(f"redundant with accepted factor {m.get('closest_library_factor')}")
 

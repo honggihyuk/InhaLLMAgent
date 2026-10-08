@@ -11,7 +11,7 @@
 | 1-2 | 벡터 DB(FAISS), 문서 수집, BGE-M3/FinBERT 임베딩, 종목 필터 검색 API | ✅ |
 | 3-4 | LLM 백엔드, CoT QuantAgent, 아이디어·구현·평가 에이전트, 공유 메모리 | ✅ |
 | 5-6 | AlphaGenerationPipeline, 코드 샌드박스, 백테스트, 예측 편향 탐지·직교화 | ✅ |
-| 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ⏳ |
+| 7-8 | 12개월+ 검증, 알려진 팩터 비교, 리스크 오버레이, 모니터링 대시보드 | ✅ |
 | 9-10 | 관리자·포트폴리오·리스크 에이전트, 앙상블 결정 | ⏳ |
 | 11-12 | 쿠버네티스, Kafka 실시간 수집, 회로 차단기·수동 개입, 감사 추적 | ⏳ |
 
@@ -138,6 +138,44 @@ python scripts/demo_pipeline.py --llm anthropic  # 실제 Claude 호출 (비용 
 합성 데이터의 신호는 일부러 강하게 심은 것이라, 이 수치는 파이프라인이 제대로 동작하는지 확인하는 용도입니다.
 
 참고: 문서 점수 매기기는 문서마다 LLM 호출 1회입니다. 결과는 `doc_scores.jsonl`에 캐시됩니다.
+
+## 7-8주차: 검증 및 운영 환경 강화
+
+```
+alphaagent/
+  validation/walkforward.py  워크포워드 검증, 알려진 팩터 스패닝 테스트(Newey-West), 시점 기준 반복 실행
+  risk/overlay.py            리스크 오버레이: 종목당 최대 비중, 섹터 중립, 총·순노출 한도, 섹터 총노출 한도
+  monitoring/decay.py        롤링 IC, 예측 기간별 IC 감소 곡선, 반감기, 팩터 상태(healthy/decaying/dead)
+  monitoring/dashboard.py    자체 완결형 HTML 대시보드(인라인 SVG, 다크 모드)
+  data/market.py             실제 가격 로더 (CSV, yfinance), 섹터 매핑
+scripts/historical_validation.py  12개월 이상 시점 기준 반복 실행 + 대시보드 생성
+```
+
+- **12개월 이상 과거 실행**: `historical_reruns`가 매월 기준일마다 그 날까지의 데이터만으로 파이프라인 전체를 다시 돌리고,
+  채택된 팩터를 **다음 달** 데이터로 채점합니다. 팩터 하나가 아니라 연구 과정 자체를 백테스트하는 셈입니다.
+- **알려진 팩터와 비교**: 기존 직교화(팩터 값 기준)에 더해, 팩터 수익률을 알려진 팩터 포트폴리오 수익률에 회귀한
+  절편의 Newey-West t값(스패닝 테스트)을 채택 기준에 넣었습니다. 워크포워드 구간의 절반 이상에서 OOS IC가 양수여야 합니다.
+- **리스크 오버레이**: `AlphaGenerationPipeline(weight_fn=RiskOverlay(...))`로 백테스트에 바로 적용됩니다.
+  상한을 넘는 쪽만 줄이는 방식이라 섹터 중립과 종목 상한이 동시에 정확히 지켜집니다.
+
+```bash
+python scripts/historical_validation.py                  # 합성 데이터 440일, 매월 재실행
+python scripts/historical_validation.py --prices px.csv  # 실제 가격 CSV (date,ticker,open,high,low,close,volume)
+```
+
+오프라인 실행 결과(합성 데이터 50종목, 2024-01 ~ 2025-09, 첫 실행 전 189일 이력, 21거래일마다 11회 재실행):
+
+| 기준일 | 새로 채택 | 운용 중 팩터 수 | 다음 달 IC (sentiment) | 다음 달 IC (guidance) |
+|---|---|---|---|---|
+| 2024-09 ~ 2024-11 | 없음 | 0 | | |
+| 2024-12-18 | sentiment_drift | 1 | 0.074 | |
+| 2025-01 ~ 2025-03 | | 1 | 0.006 / 0.129 / 0.036 | |
+| 2025-04-15 | guidance_surprise_unpriced | 2 | 0.082 | 0.077 |
+| 2025-05 ~ 2025-07 | | 2 | 0.139 / -0.011 / 0.161 | 0.141 / 0.008 / 0.073 |
+
+운용 중인 팩터-월 12개의 다음 달 평균 IC는 0.076이고, 12개 중 11개 달이 양수였습니다. 초기 3개월은 표본이 짧아 아무것도 채택하지 않았습니다.
+대시보드는 `guidance_surprise_unpriced`를 최근 60일 IC가 전체 평균의 1/3로 떨어져 `decaying`으로 표시합니다.
+실행 시간은 약 7분입니다(대부분 샌드박스 프로세스 기동 시간).
 
 ## 테스트
 
