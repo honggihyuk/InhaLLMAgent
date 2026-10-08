@@ -4,7 +4,7 @@
 "How Quants Use LLM Agents To Mine Alpha From Unstructured Data (The Complete RAG Framework)" 글의
 아키텍처와 12주 로드맵을 구현했습니다.
 
-자세한 내용은 [docs/](docs/README.md)에 있습니다: [아키텍처](docs/architecture.md) · [작업 문서](docs/work-log.md) · [운영 가이드](docs/operations.md)
+자세한 내용은 [docs/](docs/README.md)에 있습니다: [아키텍처](docs/architecture.md) · [사용 기술](docs/technologies.md) · [작업 문서](docs/work-log.md) · [운영 가이드](docs/operations.md)
 
 ## 아키텍처
 
